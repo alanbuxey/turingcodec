@@ -47,9 +47,9 @@ struct Speed
     Speed(Type speed = slow) : speed(speed) { }
 
     operator Type() const
-	{
+    {
         return this->speed;
-	}
+    }
 
     bool trySplit(const coding_quadtree &cqt) const
     {
@@ -73,7 +73,6 @@ struct Speed
         }
         return true;
     }
-
 
     bool useSmallSearchWindow() const
     {
@@ -148,6 +147,16 @@ struct Speed
     bool useAps() const
     {
         return *this >= medium;
+    }
+
+    bool useSao() const
+    {
+        return *this <= medium;
+    }
+
+    bool useSaoSlow() const
+    {
+        return *this < medium;
     }
 
     int  setMaxNumMergeCand() const

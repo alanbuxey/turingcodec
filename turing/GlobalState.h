@@ -40,8 +40,6 @@ For more information, contact us at info @ turingcodec.org.
 #include "Profiler.h"
 #include "StateFunctionTables.h"
 #include "QpState.h"
-#include "RateControl.h"
-#include "Mvp.h"
 #include <cstdint>
 #include <type_traits>
 #include <vector>
@@ -54,40 +52,25 @@ For more information, contact us at info @ turingcodec.org.
 // Decoder or encoder state that persists for the whole video sequence
 struct StateSequence :
     StateParameterSets,
+    ValueHolder<Active<Vps>>,
+    ValueHolder<Active<Sps>>,
     StatePictures,
     Profiler::Timers
-    {
-    };
+{
+};
 
 
-// State that relates to a NAL unit
-struct StateNalUnit :
-    ValueHolder<nal_unit_type>,
-    ValueHolder<nuh_layer_id>,
-    ValueHolder<nuh_temporal_id_plus1>
-    {
-        StateNalUnit()
-        {
-            this->ValueHolder<nuh_temporal_id_plus1>::value = 1;
-        }
-    };
+namespace Mvp {
+
+struct Predictors
+{
+    PuData merge[5];
+    MotionVector mvp[15 /* refIdx */][2 /* refList */][2 /* mvp_flag */];
+};
+
+}
 
 
-
-// Decoder or encoder state that persists while working on a particular slice of video
-struct StateSlice :
-    StateNalUnit,
-    ValueHolder<SliceAddrRs>,
-    ValueHolder<CtbAddrInTs>,
-    ValueHolder<QpY>,
-    SliceSegmentHeader,
-    ScalingMatrices,
-    ActiveParameterSets,
-    short_term_ref_pic_set
-    {
-        Contexts savedContexts[2];
-        int savedStatCoeff[2][4];
-    };
 
 struct StateSubstream :
     AccessOperators<StateSubstream>,
@@ -168,12 +151,13 @@ struct StateSubstream :
     ValueHolder<mvd_sign_flag>,
     ValueHolder<mvp_l0_flag>,
     ValueHolder<mvp_l1_flag>,
-    ValueHolder<Mvd>
-    {
-        using AccessOperators<StateSubstream>::operator[];
+    ValueHolder<Mvd>,
+    StateGrey
+{
+    using AccessOperators<StateSubstream>::operator[];
 
-        template <class H>
-        StateSubstream(H &h)
+    template <class H>
+    StateSubstream(H &h)
         :
         stateSpatial(h),
         QpState(h),
@@ -181,36 +165,33 @@ struct StateSubstream :
         ValueCache<MinCbLog2SizeY>(h),
         ValueCache<PicWidthInCtbsY>(h),
         ValueCache<PicHeightInCtbsY>(h),
-        chromaArrayType(h[::ChromaArrayType()])
-        {
-            for (int i = 0; i < 2; ++i)
-            {
-                for (int j = 0; j < 2; ++j)
-                {
-                    prev_intra_luma_pred_flag[i][j] = 0;
-                }
-            }
-        }
+        chromaArrayType(h[::ChromaArrayType()]),
+        StateGrey(h)
+    {
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                prev_intra_luma_pred_flag[i][j] = 0;
+    }
 
-        Profiler::Timers timers;
+    Profiler::Timers timers;
 
-        int rem_intra_luma_pred_mode[2][2];
-        int mpm_idx[2][2];
-        int prev_intra_luma_pred_flag[2][2];
-        int intra_chroma_pred_mode[2][2];
-        int chromaArrayType;
-        int ctxSet; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
-        int greater1Ctx; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
-        int previousGreater1Flag; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
-        int lastGreater1Flag; // used in Read.h Call<residual_coding, H>
-        int lastGreater1Ctx; // used in Read.h Call<residual_coding, H>
-        int cLastAbsLevel; // used in Read.h Call<residual_coding, H>
-        int cLastRiceParam; // used in Read.h Call<residual_coding, H>
-        bool firstCoeffAbsLevelRemainingInSubblock;
-        int i; // used in Syntax<residual_coding, H>
-        StateSpatial *stateSpatial;
-        int partIdx;
-    };
+    int rem_intra_luma_pred_mode[2][2];
+    int mpm_idx[2][2];
+    int prev_intra_luma_pred_flag[2][2];
+    int intra_chroma_pred_mode[2][2];
+    int chromaArrayType;
+    int ctxSet; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
+    int greater1Ctx; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
+    int previousGreater1Flag; // used in Read.h Call<Element<coeff_abs_level_greater1_flag, ae>,  H>
+    int lastGreater1Flag; // used in Read.h Call<residual_coding, H>
+    int lastGreater1Ctx; // used in Read.h Call<residual_coding, H>
+    int cLastAbsLevel; // used in Read.h Call<residual_coding, H>
+    int cLastRiceParam; // used in Read.h Call<residual_coding, H>
+    bool firstCoeffAbsLevelRemainingInSubblock;
+    int i; // used in Syntax<residual_coding, H>
+    StateSpatial *stateSpatial;
+    int partIdx;
+};
 
 
 template <class V, class Derived>

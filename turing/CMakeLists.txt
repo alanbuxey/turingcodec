@@ -9,11 +9,11 @@ else()
 endif()
 
 configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/git-describe.h.in 
+    ${CMAKE_CURRENT_SOURCE_DIR}/git-describe.h.in
     ${CMAKE_CURRENT_SOURCE_DIR}/git-describe.h)
 
 include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR} 
+    ${CMAKE_CURRENT_SOURCE_DIR}
     "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 if (USE_SYSTEM_BOOST)
@@ -37,11 +37,14 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_ALL_NO_LIB /bigobj /GS- /MP")
 endif()
 
+set(LINK_LIBRARIES boost_program_options boost_filesystem boost_system boost_timer boost_chrono)
+
 if (CMAKE_COMPILER_IS_GNUCC)
-    set(GCC_COMPILE_FLAGS "-fno-operator-names -std=c++0x -pthread -O3 -std=c++1y -mlzcnt")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0")
-    set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${GCC_COMPILE_FLAGS}")
-endif (CMAKE_COMPILER_IS_GNUCC	)
+    add_compile_options(-fno-operator-names -pthread -std=c++1y)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-strict-aliasing")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -DVALGRIND_FRIENDLY")
+    set(LINK_LIBRARIES ${LINK_LIBRARIES} -pthread rt)
+endif (CMAKE_COMPILER_IS_GNUCC)
 
 set(SEI_HEADERS
     sei/ReadSei.h
@@ -90,30 +93,37 @@ set(SEI_HEADERS
     sei/user_data_unregistered.h)
 
 add_library(turing
-    Cabac.cpp 
-    encode.cpp 
-    psnr.cpp 
-    TaskEncodeInput.cpp 
+    Cabac.cpp
+    ContextModel.cpp
+    EncodeResidual.cpp
+    EncodeResidualPopcnt.cpp
+    EncodeResidual.hpp
+    EncodeResidual.h
+    encode.cpp
+    psnr.cpp
+    TaskEncodeInput.cpp
     decode.cpp
-    Encoder.cpp 
-    Rdoq.cpp 
-    TaskEncodeOutput.cpp 
-    DecodeCtu.cpp 
-    InputQueue.cpp 
-    Reconstruct.cpp 
-    TaskEncodeSubstream.cpp 
-    DecodeRbsp.cpp 
-    ThreadPool.cpp 
+    Encoder.cpp
+    Rdoq.cpp
+    TaskEncodeOutput.cpp
+    DecodeCtu.cpp
+    InputQueue.cpp
+    Reconstruct.cpp
+    TaskEncodeSubstream.cpp
+    DecodeRbsp.cpp
+    ThreadPool.cpp
     md5.c
-    ScalingMatrices.cpp 
-    Picture.cpp 
-    Search.cpp 
-    sao.cpp 
+    ScalingMatrices.cpp
+    Picture.cpp
+    Search.cpp
+    SearchLzcnt.cpp
+    sao.cpp
     signature.cpp
-    ProgressReporter.cpp 
-    SCDetection.cpp
-    smoke.cpp 
-    TaskDeblock.cpp 
+    ProgressReporter.cpp
+    ScanOrder.cpp
+    TaskDeblock.cpp
+    testdecode.cpp
+    TaskSao.cpp
     Aps.h
     Binarization.h
     BitField.h
@@ -130,6 +140,7 @@ add_library(turing
     DecodedPicture.h
     Dsp.h
     Encoder.h
+    EncSao.h
     EstimateRate.h
     EstimateIntraComplexity.h
     FixedPoint.h
@@ -166,6 +177,7 @@ add_library(turing
     ScanOrder.h
     SCDetection.h
     Search.h
+    Search.hpp
     Snake.h
     Speed.h
     StateCollocatedMotion.h
@@ -187,23 +199,45 @@ add_library(turing
     SyntaxRbsp.hpp
     SyntaxSei.h
     TaskDeblock.h
+    TaskSao.h
     TaskEncodeInput.h
     TaskEncodeOutput.h
     TaskEncodeSubstream.h
     ThreadPool.h
     turing.h
-    Vanilla.h
     Violation.h
     Write.h
     ${SEI_HEADERS})
+
+if (CMAKE_COMPILER_IS_GNUCC)
+    set_source_files_properties(EncodeResidualPopcnt.cpp PROPERTIES COMPILE_FLAGS "-mlzcnt -mpopcnt")
+    set_source_files_properties(SearchLzcnt.cpp PROPERTIES COMPILE_FLAGS "-mlzcnt -mpopcnt")
+endif (CMAKE_COMPILER_IS_GNUCC)
 
 source_group(SEI FILES ${SEI_HEADERS})
 
 target_link_libraries (turing LINK_PUBLIC havoc)
 
-add_executable (turing-exe main.cpp )
+unset(CMAKE_IMPORT_LIBRARY_SUFFIX)
 
-target_link_libraries (turing-exe LINK_PUBLIC turing boost_program_options boost_filesystem boost_system boost_timer boost_chrono)
+add_executable (turing-exe main.cpp)
+
+set_target_properties(turing-exe PROPERTIES OUTPUT_NAME turing)
+
+target_link_libraries (turing-exe LINK_PUBLIC turing ${LINK_LIBRARIES})
+
+if(UNIX)
+	include(FindPkgConfig QUIET)
+	if(PKG_CONFIG_FOUND)
+		configure_file("libturing.pc.in" "libturing.pc" @ONLY)
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libturing.pc" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig")
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/../boost/libs/chrono/src/libboost_chrono.a" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/boost")
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/../boost/libs/filesystem/src/libboost_filesystem.a" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/boost")
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/../boost/libs/program_options/src/libboost_program_options.a" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/boost")
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/../boost/libs/system/src/libboost_system.a" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/boost")
+		install(FILES "${CMAKE_CURRENT_BINARY_DIR}/../boost/libs/timer/src/libboost_timer.a" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/boost")
+	endif()
+endif()
 
 install(TARGETS turing LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 install(FILES turing.h DESTINATION include)

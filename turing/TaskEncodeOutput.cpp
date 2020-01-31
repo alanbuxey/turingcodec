@@ -113,32 +113,42 @@ bool writeOut(H &h)
 
     if(!stateEncode->userDataUnregSeiWritten)
     {
+        // Review: add command line options
+        auto const message = "Turing codec version " + std::string(turing_version());
+
+        StateWriteUserDataUnregistered *stateWriteUserDataUnregistered = h;
+        stateWriteUserDataUnregistered->p = message.c_str();
+        stateWriteUserDataUnregistered->end = stateWriteUserDataUnregistered->p + message.length();
+
+        h[uuid_iso_iec_11578()] = boost::uuids::string_generator()("ac9e584e2d484bdd8ccbf3ff9a878e69");
+
         h[nal_unit_type()] = PREFIX_SEI_NUT;
         h[last_payload_type_byte()] = PayloadTypeOf<user_data_unregistered>::value;
-
-        const uint8_t turingUuid[16] = {0xac, 0x9e, 0x58, 0x4e,
-                                        0x2d, 0x48, 0x4b, 0xdd,
-                                        0x8c, 0xcb, 0xf3, 0xff,
-                                        0x9a, 0x87, 0x8e, 0x69};
-        for(int i = 0; i < 16; i++)
-        {
-            h[uuid_iso_iec_11578(i)] = turingUuid[i];
-        }
-        // Review: add command line options
-        string message("Turing codec version " + string(turing_version()));
-        stateEncode->userDataUnregMsgLen = message.length();
-        for(int i = 0; i < stateEncode->userDataUnregMsgLen; i++)
-        {
-            h[user_data_payload_byte(i)] = message[i];
-        }
+        h(byte_stream_nal_unit(0));
 
         stateEncode->userDataUnregSeiWritten = true;
+    }
+
+    const bool writeMasterDisplayInfoSei = stateEncode->masteringDisplayInfoPresent && (isIrap(nut) || h[PicOrderCntVal()] == 0);
+    if(writeMasterDisplayInfoSei)
+    {
+        for(int c = 0; c < 3; c++)
+        {
+            h[display_primaries_x(c)] = stateEncode->masterDisplayInfo.displayPrimariesX[c];
+            h[display_primaries_y(c)] = stateEncode->masterDisplayInfo.displayPrimariesY[c];
+        }
+        h[white_point_x()] = stateEncode->masterDisplayInfo.whitePointX;
+        h[white_point_y()] = stateEncode->masterDisplayInfo.whitePointY;
+        h[max_display_mastering_luminance()] = stateEncode->masterDisplayInfo.maxDisplayMasteringLuma;
+        h[min_display_mastering_luminance()] = stateEncode->masterDisplayInfo.minDisplayMasteringLuma;
+
+        h[nal_unit_type()] = PREFIX_SEI_NUT;
+        h[last_payload_type_byte()] = PayloadTypeOf<mastering_display_colour_volume>::value;
         h(byte_stream_nal_unit(0));
     }
 
     if (stateEncode->fieldcoding)
     {
-        // typedef typename Accessor<Concrete<ReconstructedPictureBase>, H>::ActualType::Sample Sample;
         PictureWrapper picturewrapper = *static_cast<StateEncodePicture *>(h)->docket->picture;
 
         // active_parameter_sets
@@ -153,8 +163,24 @@ bool writeOut(H &h)
         h[last_payload_type_byte()] = PayloadTypeOf<pic_timing>::value;
         h[frame_field_info_present_flag()] = 1;
         h[pic_struct()] = picturewrapper.fieldTB;
-        h[source_scan_type()] = 0;
+        h[source_scan_type()] = 2;
         h[duplicate_flag()] = 0;
+        h(byte_stream_nal_unit(0));
+    }
+    else if (stateEncode->framedoubling)
+    {
+        // active_parameter_sets
+        h[nal_unit_type()] = PREFIX_SEI_NUT;
+        h[last_payload_type_byte()] = PayloadTypeOf<active_parameter_sets>::value;
+        h[active_video_parameter_set_id()] = 0;
+        h[self_contained_cvs_flag()] = 1;
+        h(byte_stream_nal_unit(0));
+
+        // pic_timing
+        h[nal_unit_type()] = PREFIX_SEI_NUT;
+        h[last_payload_type_byte()] = PayloadTypeOf<pic_timing>::value;
+        h[frame_field_info_present_flag()] = 1;
+        h[pic_struct()] = 7;
         h(byte_stream_nal_unit(0));
     }
 
@@ -163,16 +189,7 @@ bool writeOut(H &h)
 
     // Write the slice segment NALU (slice_segment_data() and slice_segment_trailing_bits() suppressed here)
     NalWriter *nalWriter = h;
-    size_t rateBefore = (nalWriter->pos()) << 3;
     h(byte_stream_nal_unit(0));
-
-    size_t rateAfter = (nalWriter->pos()) << 3;
-    if(stateEncode->useRateControl)
-    {
-        StateEncodePicture *stateEncodePicture = h;
-        int currentPictureLevel = stateEncodePicture->docket->sopLevel;
-        stateEncode->rateControlEngine->setHeaderBits(static_cast<int>(rateAfter - rateBefore), h[slice_type()] == I, currentPictureLevel);
-    }
 
     {
         // Write out substream data (already with emulation prevention applied)
@@ -189,6 +206,18 @@ bool writeOut(H &h)
         h[hash_type()] = stateEncode->hashType;
         h[last_payload_type_byte()] = PayloadTypeOf<decoded_picture_hash>::value;
         h(byte_stream_nal_unit(0));
+    }
+
+    if (stateEncode->useRateControl)
+    {
+        StateEncodePicture *stateEncodePicture = h;
+        int currentPictureLevel = stateEncodePicture->docket->sopLevel;
+        size_t codingBits = (nalWriter->data->size()) << 3;
+        int segmentPoc = stateEncodePicture->docket->segmentPoc;
+        stateEncode->rateControlParams->takeTokenOnRCLevel();
+        stateEncode->rateControlMap.find(segmentPoc)->second->updateAfterEncoding(stateEncodePicture->docket, static_cast<int>(codingBits));
+        stateEncode->rateControlMap.find(segmentPoc)->second->updateSequenceControllerFinishedFrames(stateEncodePicture->docket);
+        stateEncode->rateControlParams->releaseTokenOnRCLevel();
     }
 
     return isKeyframe;
@@ -238,21 +267,6 @@ bool TaskEncodeOutput<H>::run()
                 auto h =  this->h.extend(&*response.picture);
 
                 response.keyframe = writeOut(h);
-
-                if(stateEncode->useRateControl)
-                {
-                    NalWriter *nalWriter = h;
-                    size_t rate = (nalWriter->pos()) << 3;
-                    bool isIntra = h[slice_type()] == I;
-                    int averageQp = NON_VALID_QP;
-                    double averageLambda = NON_VALID_LAMBDA;
-                    if(!isIntra)
-                        stateEncode->rateControlEngine->getAveragePictureQpAndLambda(averageQp, averageLambda);
-
-                    StateEncodePicture *stateEncodePicture = h;
-                    int currentPictureLevel = stateEncodePicture->docket->sopLevel;
-                    stateEncode->rateControlEngine->updateSequenceController(static_cast<int>(rate), averageQp, averageLambda, isIntra, currentPictureLevel);
-                }
 
                 response.done = true;
                 stateEncode->responsesAvailable.notify_all();

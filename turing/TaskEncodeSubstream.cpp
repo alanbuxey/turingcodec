@@ -69,16 +69,16 @@ bool TaskEncodeSubstream<Sample>::blocked()
     }
 
     // To encode the current CTU at (rx, ry), the CTU (rx+2, ry+1) of each reference picture must be ready for prediction.
-    int depX = std::min(rx + 2, h[PicWidthInCtbsY()] - 1);
-    int depY = std::min(ry + 1, h[PicHeightInCtbsY()] - 1);
+    int depX = std::min(rx + ctbWaitingOffsetX, h[PicWidthInCtbsY()] - 1);
+    int depY = std::min(ry + ctbWaitingOffsetY, h[PicHeightInCtbsY()] - 1);
 
     if (h[slice_type()] != I)
     {
         for (int rIdx = 0; rIdx <= h[num_ref_idx_l0_active_minus1()]; rIdx++)
         {
-            StateEncodePicture *stateEncodePicture = dynamic_cast<StateEncodePicture *>(h[RefPicList(L0)][rIdx].dp.get());
+            StateEncodePicture *stateEncodePicture = static_cast<StateEncodePicture *>(h[RefPicList(L0)][rIdx].dp.get());
             StateWavefront *stateWavefrontRef = stateEncodePicture;
-            if (!stateWavefrontRef->deblocked(depX, depY)) return true;
+            if (!stateWavefrontRef->saoed(depX, depY)) return true;
         }
     }
 
@@ -86,12 +86,52 @@ bool TaskEncodeSubstream<Sample>::blocked()
     {
         for (int rIdx = 0; rIdx <= h[num_ref_idx_l1_active_minus1()]; rIdx++)
         {
-            StateEncodePicture *stateEncodePicture = dynamic_cast<StateEncodePicture *>(h[RefPicList(L1)][rIdx].dp.get());
+            StateEncodePicture *stateEncodePicture = static_cast<StateEncodePicture *>(h[RefPicList(L1)][rIdx].dp.get());
             StateWavefront *stateWavefrontRef = stateEncodePicture;
-            if (!stateWavefrontRef->deblocked(depX, depY)) return true;
+            if (!stateWavefrontRef->saoed(depX, depY)) return true;
         }
     }
 
+    StateEncode *stateEncode = h;
+    if (stateEncode->useRateControl)
+    {
+        StateEncodePicture *stateEncodePictureCurr = h;
+        const bool currNotIntra = true;//(stateEncodePictureCurr->docket->intraFramePoc != stateEncodePictureCurr->docket->poc);
+        for (auto &response : stateEncode->responses)
+        {
+            const int rx = h[CtbAddrInRs()] % h[PicWidthInCtbsY()];
+            const int ry = h[CtbAddrInRs()] / h[PicWidthInCtbsY()];
+
+            if(response.picture)
+            {
+
+                StateEncodePicture *stateEncodePicture = response.picture.get();
+                const bool previousHierarchyLevel = stateEncodePicture->docket->hierarchyLevel < stateEncodePictureCurr->docket->hierarchyLevel;
+                const bool previousIntraPeriod = stateEncodePicture->docket->intraFramePoc < stateEncodePictureCurr->docket->intraFramePoc;
+                const bool sameIntraPeriod = stateEncodePicture->docket->intraFramePoc == stateEncodePictureCurr->docket->intraFramePoc;
+
+                if (previousHierarchyLevel && currNotIntra)
+                {
+                    StateWavefront *stateWavefrontRef = stateEncodePicture;
+
+                    if (!stateWavefrontRef->deblocked(rx, ry)) 
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        int segmentPoc = stateEncodePictureCurr->docket->segmentPoc;
+        int currPoc = stateEncodePictureCurr->docket->poc;
+        int blockingPoc = -1;
+        stateEncode->rateControlParams->takeTokenOnRCLevel();
+        bool blockedNumLeft = stateEncode->rateControlMap.find(segmentPoc)->second->blockedByNumLeftHierarchyLevel(currPoc, blockingPoc);
+        stateEncode->rateControlParams->releaseTokenOnRCLevel();
+        if (currNotIntra && blockedNumLeft)
+        {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -114,42 +154,15 @@ bool TaskEncodeSubstream<Sample>::run()
 
     StateWavefront *stateWavefront = h;
     StateEncode *stateEncode = h;
+    InputQueue *inputQueue = h;
     ThreadPool *threadPool = h;
 
     if(h[cu_qp_delta_enabled_flag()] && (h[CtbAddrInRs()] % h[PicWidthInCtbsY()] == 0))
     {
-        static_cast<QpState *>(h)->initInternalMemory(h);
-    }
-
-    if(stateEncode->useRateControl && h[CtbAddrInRs()] == 0)
-    {
-        int currentPictureLevel = this->stateEncodePicture->docket->sopLevel;
-        int sopSize = this->stateEncodePicture->docket->currentGopSize;
-        if(sopSize > 1)
-            stateEncode->rateControlEngine->setSopSize(sopSize);
-        if(h[slice_type()] == I)
+        if(h[CtbAddrInRs()] == 0 || stateEncode->wpp)
         {
-            EstimateIntraComplexity &icInfo = dynamic_cast<EstimateIntraComplexity&>(*static_cast<StateEncodePicture *>(h)->docket->icInfo);
-            stateEncode->rateControlEngine->pictureRateAllocationIntra(icInfo);
-            stateEncode->rateControlEngine->initNewSop();
+            static_cast<QpState *>(h)->initInternalMemory(h);
         }
-        else
-        {
-            if(currentPictureLevel == 1)
-            {
-                // New SOP starts, set the rate budget for GOP and this current picture
-                stateEncode->rateControlEngine->initNewSop();
-            }
-            stateEncode->rateControlEngine->pictureRateAllocation(currentPictureLevel);
-        }
-        // Compute lambda
-        this->stateEncodePicture->lambda = stateEncode->rateControlEngine->estimatePictureLambda(h[slice_type()] == I, currentPictureLevel);
-
-        // Derive QP from lambda
-        int currentQP = stateEncode->rateControlEngine->deriveQpFromLambda(this->stateEncodePicture->lambda, h[slice_type()] == I, currentPictureLevel);
-        h[slice_qp_delta()] = currentQP - stateEncode->rateControlEngine->getBaseQp();
-        this->stateEncodePicture->reciprocalLambda.set(1.0 / this->stateEncodePicture->lambda);
-        this->stateEncodePicture->reciprocalSqrtLambda = sqrt(1.0 / this->stateEncodePicture->lambda);
     }
 
     while (h[CtbAddrInRs()] != this->end)
@@ -159,6 +172,7 @@ bool TaskEncodeSubstream<Sample>::run()
 
         // Is this task blocked, waiting for previous substreams or other dependencies?
         if (this->blockedLock()) return true;
+        StateEncodePicture *stateEncodePictureCurr = h;
 
         if (!this->isLastSubstream && rx == 0)
         {
@@ -190,14 +204,6 @@ bool TaskEncodeSubstream<Sample>::run()
     }
 
     BitWriter::insertEp3Bytes(*static_cast<CabacWriter *>(h)->data, 0);
-
-    if(stateEncode->useRateControl && h[CtbAddrInRs()] == h[PicSizeInCtbsY()])
-    {
-        // Only set coding rate at the end of one frame
-        BitWriter *bitWrite = h;
-        size_t rate = (bitWrite->pos()) << 3;
-        stateEncode->rateControlEngine->setCodingBits(static_cast<int>(rate));
-    }
 
     threadPool->lock();
     const int n = --stateWavefront->nSubstreamsUnfinished;

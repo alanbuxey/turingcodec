@@ -124,13 +124,15 @@ void Syntax<coding_quadtree>::go(const coding_quadtree &e, H &h)
         if (y1 < h[pic_height_in_luma_samples()])
             h(coding_quadtree(e.x0, y1, e.log2CbSize - 1, e.cqtDepth + 1));
         else
-            h(Deleted<coding_quadtree, DownRight>(e.x0, y1, e.log2CbSize - 1, e.cqtDepth + 1));
+            h(Deleted<coding_quadtree, Right>(e.x0, y1, e.log2CbSize - 1, e.cqtDepth + 1));
 
         if (x1 < h[pic_width_in_luma_samples()] && y1 < h[pic_height_in_luma_samples()])
             h(coding_quadtree(x1, y1, e.log2CbSize - 1, e.cqtDepth + 1));
         else
-            h(Deleted<coding_quadtree, Down>(x1, y1, e.log2CbSize - 1, e.cqtDepth + 1));
-
+            if (x1 < h[pic_width_in_luma_samples()])
+                h(Deleted<coding_quadtree, Down>(x1, y1, e.log2CbSize - 1, e.cqtDepth + 1));
+            else
+                h(Deleted<coding_quadtree, Right>(x1, y1, e.log2CbSize - 1, e.cqtDepth + 1));
     }
     else
         h(coding_unit(e.x0, e.y0, e.log2CbSize));
@@ -253,8 +255,8 @@ void Syntax<coding_unit>::go(const coding_unit &cu, H &h)
             }
 
             h[MaxTrafoDepth()] = (h[current(CuPredMode(cu.x0, cu.y0))] == MODE_INTRA)
-				        ? h[max_transform_hierarchy_depth_intra()] + h[IntraSplitFlag()]
-				                                                       : h[max_transform_hierarchy_depth_inter()];
+                        ? h[max_transform_hierarchy_depth_intra()] + h[IntraSplitFlag()]
+                                                                       : h[max_transform_hierarchy_depth_inter()];
 
             h(IfCbf<rqt_root_cbf, transform_tree>{ rqt_root_cbf(), transform_tree(cu.x0, cu.y0, cu.x0, cu.y0, cu.log2CbSize, 0, 0) });
         }
@@ -403,6 +405,9 @@ void Syntax<mvd_coding>::go(const mvd_coding &e, H &h)
 }
 
 
+template <class> struct Decode;
+
+
 template <class H>
 void Syntax<transform_unit>::go(const transform_unit &tu, H &h)
 {
@@ -425,7 +430,8 @@ void Syntax<transform_unit>::go(const transform_unit &tu, H &h)
         h(cu_qp_delta_abs(), ae(v));
         if (h[cu_qp_delta_abs()])
             h(cu_qp_delta_sign_flag(), ae(v));
-        if(std::is_same<typename H::Tag, Write<void>>::value && static_cast<QpState *>(h)->getCanWrite())
+        // review: move these specifics out of the syntax function
+        if (!std::is_same<typename H::Tag, Decode<void>>::value && static_cast<QpState *>(h)->getCanWrite())
         {
             int rowQgModulo = (tu.yBase & (h[CtbSizeY()] - 1)) >> 3;
             int colQgModulo = (tu.xBase & (h[CtbSizeY()] - 1)) >> 3;

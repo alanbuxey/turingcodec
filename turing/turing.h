@@ -21,6 +21,8 @@ For more information, contact us at info @ turingcodec.org.
 #ifndef INCLUDED_turing_h
 #define INCLUDED_turing_h
 
+#define TURING_API_VERSION 2
+
 /* This file represents the public API of the Turing encoder */
 
 #include <stdint.h>
@@ -81,6 +83,8 @@ turing_bitstream const* turing_encode_headers(turing_encoder *encoder);
 turing_encoder_output const* turing_encode_picture(turing_encoder *encoder, turing_picture *picture);
 
 void turing_destroy_encoder(turing_encoder *encoder);
+
+int turing_check_binary_option(const char *option);
 
 
 #ifdef __cplusplus

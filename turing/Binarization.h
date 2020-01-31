@@ -46,8 +46,8 @@ DEFINE_STRUCT_ARITY_1(EncodeBypass, binVal);
 struct FinishCabac;
 
 
-template <class F>
-struct Write;
+template <class F> struct Write;
+
 
 template <class V>
 struct Write<Element<V, ae>>
@@ -121,6 +121,162 @@ struct Write<Element<split_cu_flag, ae>>
     }
 };
 
+// sao( )
+template <>
+struct Write<Element<sao_type_idx_luma, ae>>
+{
+    template <class H> static void go(Element<sao_type_idx_luma, ae> fun, H &h)
+    {
+        //coding_quadtree cqt = *static_cast<coding_quadtree *>(h);
+        const int rx = h[xCtb()] >> h[CtbLog2SizeY()];
+        const int ry = h[yCtb()] >> h[CtbLog2SizeY()];
+
+        const int synVal = h[SaoTypeIdx(0, rx, ry)];
+        const int binVal0 = (synVal == 0 ? 0 : 1);
+        h(EncodeDecision<sao_type_idx_luma>(binVal0, 0));
+        if (binVal0 != 0)
+        {
+            const int binVal1 = synVal - 1;
+            h(EncodeBypass<sao_type_idx_luma>(binVal1));
+        }
+    }
+};
+
+template <>
+struct Write<Element<sao_type_idx_chroma, ae>>
+{
+    template <class H> static void go(Element<sao_type_idx_chroma, ae> fun, H &h)
+    {
+        //coding_quadtree cqt = *static_cast<coding_quadtree *>(h);
+        const int rx = h[xCtb()] >> h[CtbLog2SizeY()];
+        const int ry = h[yCtb()] >> h[CtbLog2SizeY()];
+
+        const int synVal = h[SaoTypeIdx(1, rx, ry)];
+        const int binVal0 = (synVal == 0 ? 0 : 1);
+        h(EncodeDecision<sao_type_idx_chroma>(binVal0, 0));
+        if (binVal0 != 0)
+        {
+            const int binVal1 = synVal - 1;
+            h(EncodeBypass<sao_type_idx_chroma>(binVal1));
+        }
+    }
+};
+
+template <>
+struct Write<Element<sao_offset_abs, ae>>
+{
+    template <class H> static void go(Element<sao_offset_abs, ae> fun, H &h)
+    {
+        const int bitDepth = fun.v.cIdx ? h[BitDepthC()] : h[BitDepthY()];
+        const int cMax = (1 << (std::min(bitDepth, 10) - 5)) - 1;
+
+        int synVal = h[fun.v];
+        int binVal = synVal;
+        for (int loop = 0; loop < cMax; loop++)
+        {
+            int currBin = (binVal == 0 ? 0 : 1);
+            h(EncodeBypass<sao_offset_abs>(currBin));
+            if (!binVal) break;
+            binVal -= 1;
+        }
+    }
+};
+
+template <>
+struct Write<Element<sao_eo_class_luma, ae>> // FL, cMax=3 | Bypass
+{
+    template <class H> static void go(Element<sao_eo_class_luma, ae> fun, H &h)
+    {
+        const int rx = h[xCtb()] >> h[CtbLog2SizeY()];
+        const int ry = h[yCtb()] >> h[CtbLog2SizeY()];
+        const int synVal = h[SaoEoClass(0, rx, ry)];// h[fun.v]; //GetValueForWrite<rem_intra_luma_pred_mode, H>::get(fun.v, h);
+        int fl = 2;
+        for (int binIdx = 0; binIdx < fl; binIdx++)
+        {
+            int binValue = 1 << (fl - 1 - binIdx);
+            binValue &= synVal;
+            binValue >>= (fl - 1 - binIdx);
+            h(EncodeBypass<sao_eo_class_luma>(binValue));
+        }
+
+        //int binVal0 = synVal <= 2 ? 1 : 0;
+        //h(EncodeBypass<sao_eo_class_luma>(binVal0));
+        //int binVal1 = (synVal == 3 || synVal == 1)? 1 : 0;
+        //h(EncodeBypass<sao_eo_class_luma>(binVal1));
+    }
+};
+
+template <>
+struct Write<Element<sao_eo_class_chroma, ae>> // FL, cMax=3 | Bypass
+{
+    template <class H> static void go(Element<sao_eo_class_chroma, ae> fun, H &h)
+    {
+        const int rx = h[xCtb()] >> h[CtbLog2SizeY()];
+        const int ry = h[yCtb()] >> h[CtbLog2SizeY()];
+        const int synVal = h[SaoEoClass(1, rx, ry)];// h[fun.v]; //GetValueForWrite<rem_intra_luma_pred_mode, H>::get(fun.v, h);
+        int fl = 2;
+        for (int binIdx = 0; binIdx < fl; binIdx++)
+        {
+            int binValue = 1 << (fl - 1 - binIdx);
+            binValue &= synVal;
+            binValue >>= (fl - 1 - binIdx);
+            h(EncodeBypass<sao_eo_class_chroma>(binValue));
+        }
+        //int binVal0 = synVal <= 2 ? 1 : 0;
+        //h(EncodeBypass<sao_eo_class_chroma>(binVal0));
+        //int binVal1 = (synVal == 3 || synVal == 1) ? 1 : 0;
+        //h(EncodeBypass<sao_eo_class_chroma>(binVal1));
+    }
+};
+
+template <>
+struct Write<Element<sao_band_position, ae>> // FL, cMax=31 | Bypass
+{
+    template <class H> static void go(Element<sao_band_position, ae> fun, H &h)
+    {
+        const int synVal = h[fun.v];//GetValueForWrite<sao_band_position, H>::get(fun.v, h);
+
+        h(EncodeBypass<sao_band_position>((synVal & 0x10) ? 1 : 0));
+        h(EncodeBypass<sao_band_position>((synVal & 0x08) ? 1 : 0));
+        h(EncodeBypass<sao_band_position>((synVal & 0x04) ? 1 : 0));
+        h(EncodeBypass<sao_band_position>((synVal & 0x02) ? 1 : 0));
+        h(EncodeBypass<sao_band_position>((synVal & 0x01) ? 1 : 0));
+    }
+};
+
+
+template <>
+struct Write<Element<sao_offset_sign, ae>> // FL, cMax=1 | Bypass
+{
+    template <class H> static void go(Element<sao_offset_sign, ae> fun, H &h)
+    {
+        const int synVal = h[fun.v]; //GetValueForWrite<rem_intra_luma_pred_mode, H>::get(fun.v, h);
+        int binVal0 = synVal == 1 ? 1 : 0;
+        h(EncodeBypass<sao_offset_sign>(binVal0));
+    }
+};
+
+template <>
+struct Write<Element<sao_merge_left_flag, ae>> // FL, cMax=1 | Bypass
+{
+    template <class H> static void go(Element<sao_merge_left_flag, ae> fun, H &h)
+    {
+        const int synVal = h[fun.v];
+        int binVal0 = synVal == 1 ? 1 : 0;
+        h(EncodeDecision<sao_merge_left_flag>(binVal0, 0));
+    }
+};
+
+template <>
+struct Write<Element<sao_merge_up_flag, ae>> // FL, cMax=1 | Bypass
+{
+    template <class H> static void go(Element<sao_merge_up_flag, ae> fun, H &h)
+    {
+        const int synVal = h[fun.v];
+        int binVal0 = synVal == 1 ? 1 : 0;
+        h(EncodeDecision<sao_merge_up_flag>(binVal0, 0));
+    }
+};
 
 // coding_unit( )
 
@@ -232,7 +388,7 @@ struct Write<Element<pcm_flag, ae>>
     }
 };
 
-template <class F> struct MeasureLuma;
+
 template <class F> struct EstimateRateLuma;
 
 
@@ -251,9 +407,7 @@ struct Write<Element<prev_intra_luma_pred_flag, ae>>
         if (fun.v.y0 != cqt->y0) partIdx += 2;
         auto const value = stateCodedData->codedCu.IntraPredModeY(partIdx);
 
-        typedef std::is_same<typename H::Tag, MeasureLuma<void>> SearchingIntraPartitionLuma;
-        typedef std::is_same<typename H::Tag, EstimateRateLuma<void>> SearchingIntraPartitionLuma2;
-        if (!SearchingIntraPartitionLuma::value && !SearchingIntraPartitionLuma2::value)
+        if (!std::is_same<typename H::Tag, EstimateRateLuma<void>>::value)
         {
             Neighbourhood *neighbourhood = h;
 
@@ -468,8 +622,10 @@ struct Write<Element<split_transform_flag, ae>>
         transform_tree &tt = *static_cast<transform_tree *>(h);
         const auto ctxInc = 5 - tt.log2TrafoSize;
 
+        StateCodedData *stateCodedData = h;
+
         // review: have handler read h[split_transform_flag()] direct from coded data during write
-        h[fun.v] = static_cast<StateCodedData *>(h)->transformTree.word0().split_transform_flag;
+        h[fun.v] = stateCodedData->transformTree.word0().split_transform_flag;
 
         const int synVal = h[fun.v];
 
@@ -508,6 +664,8 @@ struct WriteCbfC
 template <> struct Write<Element<cbf_cb, ae>> : WriteCbfC<cbf_cb> { };
 
 template <> struct Write<Element<cbf_cr, ae>> : WriteCbfC<cbf_cr> { };
+
+
 
 template <>
 struct Write<Element<cu_qp_delta_abs, ae>>
@@ -786,24 +944,9 @@ WriteLastSigSuffix<last_sig_coeff_y_suffix, last_sig_coeff_y_prefix>
 {
 };
 
-template <>
-struct Write<Element<coeff_abs_level_greater1_flag, ae>>
-{
-    template <class H> static inline void go(Element<coeff_abs_level_greater1_flag, ae> fun, H &h)
-    {
-        // FL cMax=1
-        const int synVal = h[fun.v];
-        h(EncodeDecision<coeff_abs_level_greater1_flag>(synVal, ctxInc(h)));
-    }
-
-    template <class H> static inline int ctxInc(H& h)
-    {
-        StateEncodeSubstreamBase const *stateEncodeSubstreamBase = h;
-        residual_coding const *rc = h;
-
-        return (stateEncodeSubstreamBase->ctxSet * 4 ) + std::min( 3, stateEncodeSubstreamBase->greater1Ctx ) + (rc->cIdx ? 16 : 0);
-    }
-};
+// These two integrated into EncodeResidual
+template <> struct Write<Element<coeff_abs_level_greater1_flag, ae>>;
+template <> struct Write<Element<coeff_abs_level_greater2_flag, ae>>;
 
 template <>
 struct Write<Element<coeff_sign_flag, ae>>
@@ -936,25 +1079,6 @@ struct Write<Element<sig_coeff_flag, ae>>
 };
 
 
-template <>
-struct Write<Element<coeff_abs_level_greater2_flag, ae>>
-{
-    template <class H> static inline void go(Element<coeff_abs_level_greater2_flag, ae> fun, H &h)
-    {
-        // FL cMax=1
-        const int synVal = h[fun.v];
-        h(EncodeDecision<coeff_abs_level_greater2_flag>(synVal, ctxInc(h)));
-    }
-
-    template <class H> static inline int ctxInc(H& h)
-    {
-        // review: smaller struct for ctxSet, shared with parser?
-        StateEncodeSubstreamBase const *stateEncodeSubstreamBase = h;
-        residual_coding const *rc = h;
-
-        return stateEncodeSubstreamBase->ctxSet + (rc->cIdx ? 4 : 0);
-    }
-};
 
 template <>
 struct Write<Element<coded_sub_block_flag, ae>>
@@ -987,27 +1111,14 @@ struct Write<Element<coded_sub_block_flag, ae>>
 template <>
 struct Write<Element<coeff_abs_level_remaining, ae>>
 {
-    template <class H> static void go(Element<coeff_abs_level_remaining, ae> fun, H &h)
+    template <class H> static void go(Element<coeff_abs_level_remaining, ae> fun, H &h);
+
+    template <class H> static void write(int synVal, int cAbsLevel, int &cRiceParam, H &h)
     {
-        typedef typename Access<Concrete<ReconstructedPictureBase>, H>::ActualType::Sample Sample;
-        static_assert(std::is_same<Sample, uint8_t>::value || std::is_same<Sample, uint16_t>::value, "");
-
-        // FL cMax=1
-        StateEncode& stateEncode = *static_cast<StateEncode *>(h);
-        const int synVal = h[fun.v];
-
-        // review: smaller state for baseLevel, cLastRiceParam et al?
-        StateEncodeSubstreamBase *stateEncodeSubstreamBase = h;
-        const int cAbsLevel = stateEncodeSubstreamBase->baseLevel + synVal;
-
-        const int cRiceParam = std::min( stateEncodeSubstreamBase->cLastRiceParam + ( stateEncodeSubstreamBase->cLastAbsLevel > ( 3 * ( 1  <<  stateEncodeSubstreamBase->cLastRiceParam ) ) ? 1 : 0 ), 4 );
-
-        // 	   if (logstream && nn(false)<10000000) *logstream << cRiceParam << "\n";
-
         const int cMax = 4 << cRiceParam;
 
         // coeff_abs_level_remaining prefix
-        const int prefixVal = std::min( cMax, synVal );
+        const int prefixVal = std::min(cMax, synVal);
 
         bool fourOnes = false;
         {
@@ -1016,7 +1127,7 @@ struct Write<Element<coeff_abs_level_remaining, ae>>
             const int prefixValTr = synValTr >> cRiceParam;
 
             // TR prefix
-            if (prefixValTr < (cMax  >>  cRiceParam))
+            if (prefixValTr < (cMax >> cRiceParam))
             {
                 for (int binIdx = 0; binIdx < prefixValTr; ++binIdx)
                 {
@@ -1026,12 +1137,12 @@ struct Write<Element<coeff_abs_level_remaining, ae>>
             }
             else
             {
-                for (int binIdx = 0; binIdx < (cMax  >>  cRiceParam); ++binIdx)
+                for (int binIdx = 0; binIdx < (cMax >> cRiceParam); ++binIdx)
                 {
                     h(EncodeBypass<coeff_abs_level_remaining>(1));
                 }
 
-                assert((cMax  >>  cRiceParam) == 4);
+                assert((cMax >> cRiceParam) == 4);
                 fourOnes = true;
             }
 
@@ -1039,7 +1150,7 @@ struct Write<Element<coeff_abs_level_remaining, ae>>
             if (cMax > synValTr)
             {
                 assert(!fourOnes);
-                const int suffixValTr = synValTr - ( ( prefixValTr )  <<  cRiceParam );
+                const int suffixValTr = synValTr - ((prefixValTr) << cRiceParam);
                 int shift = cRiceParam;
                 while (shift--)
                 {
@@ -1074,14 +1185,55 @@ struct Write<Element<coeff_abs_level_remaining, ae>>
                     }
                     stopLoop = 1;
                 }
-            }
-            while (!stopLoop);
+            } while (!stopLoop);
         }
 
-        // 	   if (logstream && nn(false)<10000000) *logstream << "abs=" << cAbsLevel << " base=" << stateEncodeSubstreamBase->baseLevel << " rice=" << cRiceParam << "\n";
+        cRiceParam = std::min(cRiceParam + (cAbsLevel > (3 * (1 << cRiceParam)) ? 1 : 0), 4);
+    }
+};
 
-        stateEncodeSubstreamBase->cLastAbsLevel = cAbsLevel;
-        stateEncodeSubstreamBase->cLastRiceParam = cRiceParam;
+
+template <class F> struct EstimateRate;
+
+
+template <>
+struct EstimateRate<Element<coeff_abs_level_remaining, ae>>
+{
+    // this function no longer used -  nowinlined into residual encoding
+    template <class H> static void go(Element<coeff_abs_level_remaining, ae> fun, H &h);
+
+    template <class H> static inline void write(int synVal, int cAbsLevel, int &cRiceParam, H &h)
+    {
+        StateEstimateRate *stateEstimateRate = h;
+        
+        int bits = cRiceParam + 1 + 3;
+        auto const a = (synVal >> cRiceParam) - 3;
+
+        // TR prefix
+        if (a < 0)
+        {
+            bits += a;
+        }
+        else
+        {
+            unsigned long index;
+#ifdef WIN32
+            _BitScanReverse(&index, a + 1);
+#elif __GNUC__
+            index = __builtin_clz(a + 1) ^ 31;
+#else
+            index = 15;
+            while (!((a + 1) & (1 << index)))
+                --index;
+#endif
+
+            bits += 2 * index;
+        }
+
+
+        cRiceParam = std::min(cRiceParam + (cAbsLevel > (3 * (1 << cRiceParam)) ? 1 : 0), 4);
+
+        stateEstimateRate->rate += Cost::make(bits, 0);
     }
 };
 

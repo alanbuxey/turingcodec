@@ -35,11 +35,13 @@ For more information, contact us at info @ turingcodec.org.
 #include <fstream>
 #include <memory>
 #include <cstring>
+#include <map>
 
 
 #pragma optimize ("", off)
 
 namespace po = boost::program_options;
+using std::string;
 
 
 // custom parsing for "--speed" command-line option
@@ -64,7 +66,7 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
     optionsInput.add_options()
                 ("input-res", po::value<std::string>()->required(), "video frame resolution <width>x<height>")
                 ("seek", po::value<size_t>(0), "number of initial frames to be omitted before encoding starts")
-                ("frames", po::value<size_t>()->required(), "number of frames to encode")
+                ("frames", po::value<size_t>()->required(), "number of frames to encode") // <review - would be better if this was not required so encoder can encode whole sequence
                 ("frame-rate", po::value<double>()->required(), "sequence frame rate") // <review - this needs to be a rational number for, e.g. 30000/1001 framerates
                 ("bit-depth", po::value<int>()->default_value(8), "video bit depth (of both input YUV and output stream)");
     options.add(optionsInput);
@@ -75,7 +77,14 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
                 ("dump-pictures", po::value<std::string>(), "reconstructed YUV file name (separate fields if field-coding is enabled)")
                 ("dump-frames", po::value<std::string>(), "reconstructed YUV file name (interleaved frames if field-coding is enabled)")
                 ("hash", po::value<int>(), "Decoded picture hash: 0 = MD5 sum, 1 = CRC, 2 = Check sum")
-                ("atc-sei", po::value<int>()->default_value(-1), "Alternative transfer characteristics SEI message: --atc-sei ptc (preferred transfer characteristics)");
+                ("atc-sei", po::value<int>()->default_value(-1), "Alternative transfer characteristics SEI message: --atc-sei ptc (preferred transfer characteristics)")
+                ("mastering-display-info", po::value<std::string>(), "Mastering display colour volume SEI message: --mastering-display-info <string> "
+                        "where string has the following format:\n"
+                        "\"G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)\"\n"
+                        "- with G(x,y) denoting the normalised x and y chromaticity coordinates for the green colour (and similarly for blue and red),\n"
+                        "- WP(x,y) denoting the normalised x and y chromaticity coordinates, respectively, of the white point of the mastering display and\n"
+                        "- L(max,min) denoting the nominal maximum and minimum display luminance, respectively, of the mastering display\n"
+                        "See Sections D.2.27 and D.3.27 of the HEVC/H.265 spec. for more information");
     options.add(optionsOutput);
 
     po::options_description optionsRate("Rate control options");
@@ -94,8 +103,10 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
     optionsStructure.add_options()
         ("shot-change", po::bool_switch()->default_value(false), "enable shot change detection")
         ("field-coding", po::bool_switch()->default_value(false), "enable field coding")
+        ("frame-doubling", po::bool_switch()->default_value(false), "enable frame doubling")
         ("max-gop-n", po::value<int>()->default_value(250), "maximum intra picture interval")
         ("max-gop-m", po::value<int>()->default_value(8), "maximum anchor picture interval (1 or 8)")
+        ("segment", po::value<int>()->default_value(-1), "Enable IDR segmentation (-1 for Disabled)")
         ("wpp", po::bool_switch()->default_value(true), "enable wave-front parallel processing (default enabled)")
         ("ctu", po::value<int>()->default_value(64), "CTU size in luma pixels")
         ("min-cu", po::value<int>()->default_value(8), "minimum CU size in luma pixels")
@@ -105,6 +116,7 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
     po::options_description optionsTools("Coding tool options");
     optionsTools.add_options()
                 ("deblock", po::bool_switch()->default_value(true), "enable deblocking filter")
+                ("sao", po::bool_switch(), "enable sample adaptive offset filter")
                 ("strong-intra-smoothing", po::bool_switch(), "enable strong intra smoothing")
                 ("rqt", po::bool_switch(), "enable one level of rqt (inter coding only)")
                 ("amp", po::bool_switch(), "enable asymmetric motion partitions")
@@ -129,7 +141,8 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
                         ("cfm", po::bool_switch(), "enable coding flag mode")
                         ("met", po::bool_switch(), "enable multiple early termination for motion estimation")
                         ("aps", po::bool_switch(), "enable adaptive partition selection")
-                        ("rcudepth", po::bool_switch(), "enable rcu-depth algorithm");
+                        ("rcudepth", po::bool_switch(), "enable rcu-depth algorithm")
+                        ("sao-slow-mode", po::bool_switch()->default_value(false), "enable slow sao mode (more accurate)");
     options.add(optionsPerformance);
 
     po::options_description optionsOptimisation("Optimisation options");
@@ -167,6 +180,7 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
                 ("no-strong-intra-smoothing", po::bool_switch(), "disable strong intra smoothing")
                 ("no-wpp", po::bool_switch(), "disable wpp")
                 ("no-deblock", po::bool_switch(), "disable deblocking")
+                ("no-sao", po::bool_switch(), "disable sao")
                 ("no-rect", po::bool_switch(), "disable rectangular partitions for inter coding")
                 ("no-amp", po::bool_switch(), "disable asymmetric motion partition")
                 ("no-smp", po::bool_switch()->default_value(false), "disable symmetric motion partition")
@@ -176,6 +190,7 @@ int parseEncodeOptions(po::variables_map &vm, int argc, const char* const argv[]
                 ("no-esd", po::bool_switch(), "disable early skip detection")
                 ("no-cfm", po::bool_switch(), "disable coding flag mode")
                 ("no-met", po::bool_switch(), "disable multiple early termination")
+                ("no-sao-slow-mode", po::bool_switch(), "disable slow sao mode")
                 ("no-rdoq", po::bool_switch(), "disable rate distortion optimised quantisation")
                 ("no-rcudepth", po::bool_switch(), "disable rcu-depth algorithm")
                 ("no-sdh", po::bool_switch(), "disable sign data hiding")
@@ -229,6 +244,65 @@ const char *gitDescribe()
     return (s[0] >= '0' && s[0] <= '9') ? s : "<unknown>";
 }
 
+int turing_check_binary_option(const char *option)
+{
+    map<string, bool> supportedBinaryOptions; // option name and default value
+
+    // review: duplication here, would be better to enumerate these options where they are originally defined
+    // review: default values are not used
+    supportedBinaryOptions["aq"] = false;
+    supportedBinaryOptions["shot-change"] = false;
+    supportedBinaryOptions["field-coding"] = false;
+    supportedBinaryOptions["frame-doubling"] = false;
+    supportedBinaryOptions["wpp"] = true;
+    supportedBinaryOptions["repeat-headers"] = true;
+    supportedBinaryOptions["deblock"] = true;
+    supportedBinaryOptions["sao"] = false;
+    supportedBinaryOptions["strong-intra-smoothing"] = true;
+    supportedBinaryOptions["rqt"] = true;
+    supportedBinaryOptions["amp"] = true;
+    supportedBinaryOptions["smp"] = false;
+    supportedBinaryOptions["rdoq"] = true;
+    supportedBinaryOptions["sdh"] = true;
+    supportedBinaryOptions["tskip"] = true;
+    supportedBinaryOptions["fdm"] = true;
+    supportedBinaryOptions["fdam"] = true;
+    supportedBinaryOptions["ecu"] = true;
+    supportedBinaryOptions["esd"] = true;
+    supportedBinaryOptions["cfm"] = true;
+    supportedBinaryOptions["met"] = true;
+    supportedBinaryOptions["aps"] = true;
+    supportedBinaryOptions["rcudepth"] = true;
+    supportedBinaryOptions["sao-slow-mode"] = false;
+    supportedBinaryOptions["no-parallel-processing"] = true;
+
+    string currentOption(option);
+    int isBinaryOption = 0;
+
+    if(currentOption == "no-parallel-processing")
+    {
+        isBinaryOption = 1;
+    }
+    else
+    {
+        // Strip out any no- prefix for disabling-like options
+        auto const idx = currentOption.find("no-", 0);
+        if(idx != string::npos)
+        {
+            auto const length = currentOption.length() - 3;
+            currentOption = currentOption.substr(idx+3, length);
+        }
+
+        auto optionPresent = supportedBinaryOptions.find(currentOption);
+        if(optionPresent != supportedBinaryOptions.end())
+        {
+            isBinaryOption = 1;
+        }
+    }
+
+    return isBinaryOption;
+}
+
 
 // Review - no need for Encoder and turing_encoder - merge these two?
 struct turing_encoder
@@ -236,6 +310,8 @@ struct turing_encoder
     turing_encoder(turing_encoder_settings const &settings)
     {
         int rv = parseEncodeOptions(this->vm, settings.argc, settings.argv, std::cout, std::cerr, this->inputFilename, this->outputFilename);
+
+        this->verbosity = this->vm["verbosity"].as<int>();
 
         if (rv) throw std::runtime_error("parseEncodeOptions failed"); // review, error handling
 
@@ -247,14 +323,19 @@ struct turing_encoder
         return 1 + (this->vm.at("bit-depth").as<int>() > 8 || this->vm.at("internal-bit-depth").as<int>() > 8);
     }
 
+    size_t bytesPerInputSample() const
+    {
+        return 1 + (this->vm.at("bit-depth").as<int>() > 8);
+    }
+
     size_t bytesPerInputPicture() const
     {
-        return this->bytesPerSample() * this->encoder->pictureWidth * this->encoder->pictureHeight * 3 / 2;
+        return this->bytesPerInputSample() * this->encoder->pictureWidth * this->encoder->pictureHeight * 3 / 2;
     }
 
     size_t bytesPerInputFrame() const
     {
-        return this->bytesPerSample() * this->encoder->frameWidth * this->encoder->frameHeight * 3 / 2;
+        return this->bytesPerInputSample() * this->encoder->frameWidth * this->encoder->frameHeight * 3 / 2;
     }
 
     turing_bitstream* headers()
@@ -270,19 +351,19 @@ struct turing_encoder
         return &this->output.bitstream;
     }
 
-    static int line(int y, bool fieldCoding, bool bottomField)
+    static int line(int height, int y, bool fieldCoding, bool bottomField)
     {
         if (fieldCoding)
-            return (y << 1) + bottomField;
-        else
-            return y;
+            y = (y << 1) + bottomField;
+        if (y >= height)
+            y = height - 1;
+        return y;
     }
 
     turing_encoder_output* encode(turing_picture *picture)
     {
         this->bitstream.clear();
         this->output = { 0 };
-
         if (picture)
         {
             // note that encoder API is picture based but for interlaced coding it is being used to pass frames
@@ -308,23 +389,40 @@ struct turing_encoder
                     if (this->vm.at("bit-depth").as<int>() == 8)
                     {
                         for (int cIdx = 0; cIdx < 3; ++cIdx)
-                            for (int y = 0; y < (*pictureWrap)[cIdx].height; ++y)
+                        {
+                            for (int y = 0; y < ((this->encoder->frameHeight >> (fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); ++y)
                             {
-                                auto p = frame[cIdx].p + line(y, fieldCoding, !field) * frame[cIdx].stride;
+                                auto p = frame[cIdx].p + line(this->encoder->frameHeight >> (cIdx ? 1 : 0), y, fieldCoding, !field) * frame[cIdx].stride;
                                 for (int x = 0; x < (*pictureWrap)[cIdx].width; ++x)
                                     (*pictureWrap)[cIdx](x, y) = p[x] << 2;
                             }
+                            if (fieldCoding)
+                            {
+                                for (int y = ((this->encoder->frameHeight >> (fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); y < (*pictureWrap)[cIdx].height; ++y)
+                                {
+                                    memset(&(*pictureWrap)[cIdx](0, y), 0, (*pictureWrap)[cIdx].width * sizeof(uint16_t));
+                                }
+                            }
+                        }
                     }
                     else
                     {
                         for (int cIdx = 0; cIdx < 3; ++cIdx)
-                            for (int y = 0; y < (*pictureWrap)[cIdx].height; ++y)
+                        {
+                            for (int y = 0; y < ((this->encoder->frameHeight >> (fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); ++y)
                             {
-                                auto p = frame[cIdx].p + line(y, fieldCoding, !field) * frame[cIdx].stride;
+                                auto p = frame[cIdx].p + line(this->encoder->frameHeight >> (cIdx ? 1 : 0), y, fieldCoding, !field) * frame[cIdx].stride;
                                 memcpy(&(*pictureWrap)[cIdx](0, y), p, (*pictureWrap)[cIdx].width * sizeof(uint16_t));
                             }
+                            if (fieldCoding)
+                            {
+                                for (int y = ((this->encoder->frameHeight >> (fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); y < (*pictureWrap)[cIdx].height; ++y)
+                                {
+                                    memset(&(*pictureWrap)[cIdx](0, y), 0, (*pictureWrap)[cIdx].width * sizeof(uint16_t));
+                                }
+                            }
+                        }
                     }
-
                     pictureWrapper = pictureWrap;
                 }
                 else
@@ -334,11 +432,20 @@ struct turing_encoder
                     pictureWrap->fieldTB = (fieldCoding) ? (field + 1) : 0;
 
                     for (int cIdx = 0; cIdx < 3; ++cIdx)
-                        for (int y = 0; y < (*pictureWrap)[cIdx].height; ++y)
+                    {
+                        for (int y = 0; y < ((this->encoder->frameHeight>>(fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); ++y)
                         {
-                            auto p = frame[cIdx].p + line(y, fieldCoding, !field) * frame[cIdx].stride;
+                            auto p = frame[cIdx].p + line(this->encoder->frameHeight >> (cIdx ? 1 : 0), y, fieldCoding, !field) * frame[cIdx].stride;
                             memcpy(&(*pictureWrap)[cIdx](0, y), p, (*pictureWrap)[cIdx].width * sizeof(uint8_t));
                         }
+                        if(fieldCoding)
+                        {
+                            for (int y = ((this->encoder->frameHeight >> (fieldCoding ? 1 : 0)) >> (cIdx ? 1 : 0)); y < (*pictureWrap)[cIdx].height; ++y)
+                            {
+                                memset(&(*pictureWrap)[cIdx](0, y), 0, (*pictureWrap)[cIdx].width * sizeof(uint8_t));
+                            }
+                        }
+                    }
 
                     pictureWrapper = pictureWrap;
                 }
@@ -391,25 +498,28 @@ struct turing_encoder
     std::string inputFilename, outputFilename;
     std::vector<uint8_t> bitstream;
     turing_encoder_output output;
+    int verbosity;
 };
 
 
 const char *turing_version()
 {
-    return "1.01";
+    return "1.1";
 }
 
 
 turing_encoder *turing_create_encoder(turing_encoder_settings settings)
 {
-    std::cout << "[turing] Project Turing HEVC Encoder Version ("<< turing_version() <<") - hash commit: " << gitDescribe() << "\n";
-    std::cout << "[turing] patents pending / copyright 2016 Project Turing contributors\n";
-
     turing_encoder *encoder = 0;
 
     try
     {
         encoder = new turing_encoder(settings);
+        if (encoder->verbosity)
+        {
+            std::cout << "[turing] Project Turing HEVC Encoder Version (" << turing_version() << ") - hash commit: " << gitDescribe() << "\n";
+            std::cout << "[turing] patents pending / copyright 2016 Project Turing contributors\n";
+        }
     }
     catch (std::exception &e)
     {
@@ -452,7 +562,8 @@ turing_encoder_output const* turing_encode_picture(turing_encoder *encoder, turi
 
 void turing_destroy_encoder(turing_encoder *encoder)
 {
-    delete encoder;
+    if (encoder)
+        delete encoder;
 }
 
 
@@ -506,18 +617,8 @@ int encode(int argc, const char* const argv[])
         int nPicturesOutput = 0;
 
         {
-            encoder->encoder->printHeader(std::cout, encoder->inputFilename, encoder->outputFilename);
-
-            if (encoder->vm["shot-change"].as<bool>())
-            {
-                int bitdepth = encoder->vm.at("bit-depth").as<int>();
-                ShotChangeDetection sc(encoder->inputFilename.c_str(), bitdepth, encoder->encoder->frameWidth, encoder->encoder->frameHeight, (int)encoder->bytesPerInputFrame(), firstFrame, (int)nFrames);
-                std::vector<int> shotChangeList;
-                sc.processSeq(shotChangeList);
-                encoder->encoder->setShotChangeList(shotChangeList);
-            }
-
-            //ofs << *turing_encode_headers(encoder);
+            if (encoder->vm["verbosity"].as<int>())
+                encoder->encoder->printHeader(std::cout, encoder->inputFilename, encoder->outputFilename);
 
             for (int i = 0; i < nFrames; ++i)
             {
@@ -526,9 +627,9 @@ int encode(int argc, const char* const argv[])
                 ifs.read(reinterpret_cast<char *>(&buffer.front()), encoder->bytesPerInputFrame());
 
                 turing_picture picture;
-                picture.image[0].stride = encoder->encoder->frameWidth * encoder->bytesPerSample();
-                picture.image[1].stride = encoder->encoder->frameWidth * encoder->bytesPerSample() / 2;
-                picture.image[2].stride = encoder->encoder->frameWidth * encoder->bytesPerSample() / 2;
+                picture.image[0].stride = encoder->encoder->frameWidth * encoder->bytesPerInputSample();
+                picture.image[1].stride = encoder->encoder->frameWidth * encoder->bytesPerInputSample() / 2;
+                picture.image[2].stride = encoder->encoder->frameWidth * encoder->bytesPerInputSample() / 2;
                 picture.image[0].p = &buffer.front();
                 picture.image[1].p = picture.image[0].p + encoder->bytesPerInputFrame() / 6 * 4;
                 picture.image[2].p = picture.image[1].p + encoder->bytesPerInputFrame() / 6;
@@ -560,7 +661,8 @@ int encode(int argc, const char* const argv[])
                     break;
             }
 
-            encoder->encoder->printFooter(std::cout);
+            if (encoder->vm["verbosity"].as<int>())
+                encoder->encoder->printFooter(std::cout);
         }
     }
     catch (std::exception &e)

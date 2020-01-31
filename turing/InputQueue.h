@@ -26,6 +26,7 @@ For more information, contact us at info @ turingcodec.org.
 #include "Picture.h"
 #include "EstimateIntraComplexity.h"
 #include "AdaptiveQuantisation.h"
+#include "SCDetection.h"
 #include <memory>
 #include <vector>
 #include <set>
@@ -33,20 +34,17 @@ For more information, contact us at info @ turingcodec.org.
 
 struct InputQueue
 {
-    InputQueue(int maxGopN, int maxGopM, bool fieldCoding, bool shotChange);
+    InputQueue(int maxGopN, int maxGopM, bool fieldCoding, bool shotChange, int segmentLength, int baseQP);
 
     ~InputQueue();
-
-    void setShotChangeList(std::vector<int>& shotChangeList)
-    {
-        if (shotChangeList.size()) m_shotChangeList.swap(shotChangeList);
-    }
 
     // Addes an input picture to the queue.
     void append(std::shared_ptr<PictureWrapper> picture, std::shared_ptr<AdaptiveQuantisation> aqInfo);
 
     // Called to tell the queue that no more pictures will be appended - this is the end of video input.
     void endOfInput();
+
+    void preanalyse();
 
     // Returns true if endOfInput() was previously called
     bool eos() const;
@@ -66,21 +64,26 @@ struct InputQueue
         std::shared_ptr<EstimateIntraComplexity> icInfo;
         std::shared_ptr<AdaptiveQuantisation> aqInfo;
         int poc;
+        int absolutePoc;
         int nut;
         int sliceType;
         int qpOffset;
         double qpFactor;
         int currentGopSize;
         int sopLevel;
+        int pocInSop;
+        int sopId;
         References references;
         int64_t dts;
+        bool isShotChange;
+        int hierarchyLevel;
+        int numSameHierarchyLevel;
+        int intraFramePoc;
+        int segmentPoc;
     };
 
     // Retrieves a docket: a packet of work containing a picture and instructions of how to encode it.
     std::shared_ptr<InputQueue::Docket> getDocket();
-    
-protected:
-    std::vector<int> m_shotChangeList; // review: move into State to preserve PIMPL
 
 private:
     struct State;

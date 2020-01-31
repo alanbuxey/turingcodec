@@ -24,6 +24,7 @@ For more information, contact us at info @ turingcodec.org.
 #include "Write.h"
 #include "TaskEncodeSubstream.h"
 #include "TaskDeblock.h"
+#include "TaskSao.h"
 #include "SyntaxNal.hpp"
 #include "SyntaxRbsp.hpp"
 
@@ -40,12 +41,12 @@ template <class H>
 bool TaskEncodeInput<H>::blocked()
 {
     StateEncode *stateEncode = this->h;
-
     if (stateEncode->responses.size() < stateEncode->concurrentFrames)
     {
         // The number of frames presently being processed has not reached the maximum.
         return false;
     }
+
 
     return true;
 }
@@ -71,6 +72,13 @@ void setupSliceHeader(H &h, const InputQueue::Docket *docket)
 
     // review: this needs to be set with appropriate logic. E.g. set to 1 when mvd_l1_zero_flag is set on the first reference picture.
     h[collocated_from_l0_flag()] = 0;
+
+    if (h[sample_adaptive_offset_enabled_flag()])
+    {
+        h[slice_sao_luma_flag()] = true;
+        if (h[ChromaArrayType()] != 0)
+            h[slice_sao_chroma_flag()] = true;
+    }
 
     if (docket->poc)
     {
@@ -121,9 +129,6 @@ void setupSliceHeader(H &h, const InputQueue::Docket *docket)
 }
 
 
-template <> struct Encode<PictureBegin> : Vanilla<PictureBegin> { };
-
-
 template <class H>
 template <typename Sample>
 void TaskEncodeInput<H>::startPictureEncode(StateEncode::Response &response, std::shared_ptr<InputQueue::Docket> docket, H &hh)
@@ -141,24 +146,83 @@ void TaskEncodeInput<H>::startPictureEncode(StateEncode::Response &response, std
 
     setupSliceHeader(h, response.picture->docket.get());
     // DPB state update - may bump pictures...
-    h(PictureBegin());
+    statePictures->sliceHeaderDone(h);
+    auto &picture = h[Concrete<StatePicture>()];
+    StateEncode* stateEncode = h;
+    setupStateReconstructedPicture(picture, h, stateEncode->saoslow);
 
-    auto *p = new ReconstructedPicture2<Sample>;
-    ReconstructedPicture2<Sample> *reconstructedPicture = h;
+    // Further DPB state update - may also bump pictures
+
+    h(PictureDone());
+
+    auto *p = new StateReconstructedPicture<Sample>;
+    StateReconstructedPicture<Sample> *reconstructedPicture = h;
     p->picture = reconstructedPicture->picture;
+    p->saoPicture = reconstructedPicture->saoPicture;
+    p->deblockPicture = reconstructedPicture->deblockPicture;
     response.picture->reconstructedPicture.reset(p);
 
     // Allocate various picture memories
     response.picture->resize<Sample>(h);
+    
+    
 
-    // Further DPB state update - may also bump pictures...
-    statePictures->accessUnitDone(h);
+    if (stateEncode->useRateControl)
+    {
+        stateEncode->rateControlParams->takeTokenOnRCLevel();
+        bool isShotChange = response.picture->docket->isShotChange;
+        int currentPictureLevel = response.picture->docket->sopLevel;
+        int currentPoc = response.picture->docket->poc;
+        int segmentPoc = response.picture->docket->segmentPoc;
+        int sopSize = response.picture->docket->currentGopSize;
+        int sopId = response.picture->docket->sopId;
+        int pocInSop = response.picture->docket->pocInSop;
 
-    // Lambda computations - review: better elsewhere?
-    response.picture->qpFactor = response.picture->docket->qpFactor;
-    response.picture->lambda = computeLambda(h);
-    response.picture->reciprocalLambda.set(1.0 / response.picture->lambda);
-    response.picture->reciprocalSqrtLambda = sqrt(1.0 / response.picture->lambda);
+        if (h[slice_type()] == I)
+        {
+            if (docket->absolutePoc == docket->segmentPoc)
+            {
+                
+                assert(stateEncode->rateControlMap.find(docket->segmentPoc) == stateEncode->rateControlMap.end());
+                SequenceController *currentSequenceController = new SequenceController(stateEncode->rateControlParams);
+                stateEncode->rateControlMap[docket->segmentPoc] = currentSequenceController;
+            }
+
+            stateEncode->rateControlMap.find(segmentPoc)->second->initNewIntraPeriod(response.picture->docket);
+            stateEncode->rateControlMap.find(segmentPoc)->second->pictureRateAllocationIntra(response.picture->docket,stateEncode->rateControlParams->cpbInfo);
+            stateEncode->rateControlMap.find(segmentPoc)->second->initNewSop(response.picture->docket);
+        }
+        else
+        {
+            //if (currentPictureLevel == 1)
+            if(stateEncode->rateControlMap.find(segmentPoc)->second->bInitNewSop(response.picture->docket))
+            {
+                // New SOP starts, set the rate budget for GOP and this current picture
+                stateEncode->rateControlMap.find(segmentPoc)->second->initNewSop(response.picture->docket);
+            }
+            stateEncode->rateControlMap.find(segmentPoc)->second->pictureRateAllocation(response.picture->docket,stateEncode->rateControlParams->cpbInfo);
+        }
+
+        // Compute lambda
+        response.picture->lambda = stateEncode->rateControlMap.find(segmentPoc)->second->estimatePictureLambda(currentPoc);
+
+        // Derive QP from lambda
+        int currentQP = stateEncode->rateControlMap.find(segmentPoc)->second->deriveQpFromLambda(response.picture->lambda, h[slice_type()] == I, currentPictureLevel, h[PicOrderCntVal()]);
+
+        response.picture->qpFactor = response.picture->docket->qpFactor;
+        h[slice_qp_delta()] = currentQP - stateEncode->rateControlMap.find(segmentPoc)->second->getBaseQp();
+        response.picture->reciprocalLambda.set(1.0 / response.picture->lambda);
+        response.picture->reciprocalSqrtLambda = sqrt(1.0 / response.picture->lambda);
+        stateEncode->rateControlParams->releaseTokenOnRCLevel();
+    }
+    else
+    {
+        // Lambda computations - review: better elsewhere?
+        response.picture->qpFactor = response.picture->docket->qpFactor;
+        response.picture->lambda = computeLambda(h);
+        response.picture->reciprocalLambda.set(1.0 / response.picture->lambda);
+        response.picture->reciprocalSqrtLambda = sqrt(1.0 / response.picture->lambda);
+    }
 
     const int nCtusInFirstSubstream = h[entropy_coding_sync_enabled_flag()] ? h[PicWidthInCtbsY()] : h[PicSizeInCtbsY()];
 
@@ -169,11 +233,19 @@ void TaskEncodeInput<H>::startPictureEncode(StateEncode::Response &response, std
 
         std::unique_lock<std::mutex> lock(threadPool->mutex());
         stateEncode->responses.push_back(response);
+        if (stateEncode->useRateControl)
+        {
+            int segmentPoc = response.picture->docket->segmentPoc;
+            stateEncode->rateControlParams->takeTokenOnRCLevel();
+            stateEncode->rateControlMap.find(segmentPoc)->second->decreaseNumLeftSameHierarchyLevel(response.picture->docket);
+            stateEncode->rateControlParams->releaseTokenOnRCLevel();
+        }
         stateEncode->responsesAvailable.notify_all();
     }
 
     // Enqueue first encoding task and deblocking tasks for theadpool execution
     threadPool->add(newTaskDeblock(h, response.picture, 0, nCtusInFirstSubstream));
+    threadPool->add(newTaskSao(h, response.picture, 0, nCtusInFirstSubstream));
     threadPool->add(*new TaskEncodeSubstream<Sample>(h, response.picture, 0, nCtusInFirstSubstream));
 }
 
@@ -195,6 +267,7 @@ bool TaskEncodeInput<H>::run()
         InputQueue *inputQueue = this->h;
 
         threadPool->lock();
+        inputQueue->preanalyse();
         if (this->blocked())
         {
             threadPool->unlock();
@@ -205,6 +278,7 @@ bool TaskEncodeInput<H>::run()
         const bool eos = inputQueue->eos();
         threadPool->unlock();
 
+        //inputQueue->preanalyse();
         if (docket)
         {
             EstimateIntraComplexity *icInfo = new EstimateIntraComplexity();
@@ -262,7 +336,6 @@ bool TaskEncodeInput<H>::run()
             {
                 response.hungry = true;
                 response.done = true;
-
 
                 std::unique_lock<std::mutex> lock(threadPool->mutex());
                 stateEncode->responses.push_front(response);

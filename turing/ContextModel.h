@@ -98,6 +98,16 @@ struct ContextModel
         this->state = nextState[this->state];
     }
 
+    static uint8_t const nextStateBoth[256];
+
+    inline void update(int32_t mask)
+    {
+        int i = this->state;
+        i ^= mask;
+        this->state = nextStateBoth[128 + i];
+    }
+
+
     bool operator==(ContextModel const& other) const
     {
         return this->state == other.state;

@@ -25,6 +25,7 @@ For more information, contact us at info @ turingcodec.org.
 #define INCLUDED_EstimateRate_h
 
 #include "Write.h"
+#include "Binarization.h"
 #include "StateEncode.h"
 
 
@@ -40,7 +41,6 @@ template <> struct EstimateRate<void>;
 template <> struct EstimateRate<Element<cu_qp_delta_abs, ae>> : Null<Element<cu_qp_delta_abs, ae>>{};
 template <> struct EstimateRate<Element<cu_qp_delta_sign_flag, ae>> : Null<Element<cu_qp_delta_sign_flag, ae>>{};
 
-static EntropyEstimate<Cost> entropyEstimate;
 
 template <class V>
 struct EstimateRateBin
@@ -48,10 +48,10 @@ struct EstimateRateBin
     ContextModel contextModel;
 
     template <class H> EstimateRateBin(H &h, int ctxInc)
-	        {
+            {
         Contexts *contexts = h;
         this->contextModel = contexts->template get<typename Context<V>::Type>(ctxInc);
-	        }
+            }
 
     Cost rate(int binVal)
     {

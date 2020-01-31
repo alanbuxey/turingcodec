@@ -41,7 +41,9 @@ For more information, contact us at info @ turingcodec.org.
 static const int EDGE_VER = 0; // vertical edge
 static const int EDGE_HOR = 1; // horizontal edge
 
-template <class F> struct Write;
+// review: these should not be necessary, LoopFilter should be generic
+template <class> struct Write;
+template <class> struct Decode;
 
 namespace LoopFilter
 {
@@ -168,12 +170,12 @@ namespace LoopFilter
     {
 
         BlockEdge(Raster<Sample> s, Raster<Block> blocks, int bitDepth, int position = 0) :
-		blockP(blocks(-1, 0)),
-		blockQ(blocks(0, 0)),
-		bitDepth(bitDepth),
-		s(s.offset(0, 4*position))
-		{
-		}
+        blockP(blocks(-1, 0)),
+        blockQ(blocks(0, 0)),
+        bitDepth(bitDepth),
+        s(s.offset(0, 4*position))
+        {
+        }
 
         Sample &p(int i, int k)
         {
@@ -192,12 +194,12 @@ namespace LoopFilter
     struct BlockEdge<Sample, EDGE_HOR>
     {
         BlockEdge(Raster<Sample> s, Raster<Block> blocks, int bitDepth, int position = 0) :
-		blockP(blocks(0, -1)),
-		blockQ(blocks(0, 0)),
-		bitDepth(bitDepth),
-		s(s.offset(4*position, 0))
-		{
-		}
+        blockP(blocks(0, -1)),
+        blockQ(blocks(0, 0)),
+        bitDepth(bitDepth),
+        s(s.offset(4*position, 0))
+        {
+        }
 
         Sample &p(int i, int k)
         {
@@ -590,7 +592,7 @@ namespace LoopFilter
                 {
                     int qpy = h[QpY()];
 
-                    if(std::is_same<typename H::Tag, Write<void>>::value && h[cu_qp_delta_enabled_flag()])
+                    if(!std::is_same<typename H::Tag, Decode<void>>::value && h[cu_qp_delta_enabled_flag()])
                     {
                         int rowModulo = ((y<<3) & qpState->getMaskCtb()) >> 3;
                         int colModulo = ((x<<3) & qpState->getMaskCtb()) >> 3;
@@ -789,6 +791,24 @@ namespace LoopFilter
             }
         }
 
+        template <typename Sample, class H>
+        void applySaoCTU(H &h, int rx, int ry)
+        {
+            const int nCtbS = 1 << h[CtbLog2SizeY()];
+            StateReconstructedPicture<Sample> *reconstructedPicture = h;
+            auto &recPicture = *reconstructedPicture->picture;
+            auto &saoPicture = *reconstructedPicture->saoPicture;
+
+            if (h[slice_sao_luma_flag()])
+            {
+                filterBlockSao<Sample>(h, recPicture[0], saoPicture[0], rx, ry, nCtbS, nCtbS, 0);
+            }
+            if (h[slice_sao_chroma_flag()])
+            {
+                filterBlockSao<Sample>(h, recPicture[1], saoPicture[1], rx, ry, nCtbS / h[SubWidthC()], nCtbS / h[SubHeightC()], 1);
+                filterBlockSao<Sample>(h, recPicture[2], saoPicture[2], rx, ry, nCtbS / h[SubWidthC()], nCtbS / h[SubHeightC()], 2);
+            }
+        }
 
         template <class H>
         void applySao(H &h, Raster<uint8_t> recPictureL, Raster<uint8_t> recPictureCb, Raster<uint8_t> recPictureCr)
